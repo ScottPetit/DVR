@@ -8,6 +8,11 @@ open class Session: URLSession {
         return Bundle.allBundles.first { $0.bundlePath.hasSuffix(".xctest") }
     }
 
+    private enum RecordingStatus: Equatable {
+        case recording(Bool)
+        case awaitingManualCallback
+    }
+
     open var outputDirectory: String
     public let cassetteName: String
     public let backingSession: URLSession
@@ -15,7 +20,21 @@ open class Session: URLSession {
 
     private let testBundle: Bundle
 
-    private var recording = false
+    private var recording: Bool {
+        get {
+            switch status {
+            case let .recording(result):
+                return result
+            case .awaitingManualCallback:
+                return true
+            }
+        }
+        set {
+            guard status != .awaitingManualCallback else { return }
+            status = .recording(newValue)
+        }
+    }
+    private var status = RecordingStatus.recording(false)
     private var needsPersistence = false
     private var outstandingTasks = [URLSessionTask]()
     private var completedInteractions = [Interaction]()
@@ -81,7 +100,7 @@ open class Session: URLSession {
     }
 
     open override func invalidateAndCancel() {
-        recording = false
+        status = .recording(false)
         outstandingTasks.removeAll()
         backingSession.invalidateAndCancel()
     }
@@ -95,11 +114,18 @@ open class Session: URLSession {
             return
         }
 
-        recording = true
+        status = .recording(true)
         needsPersistence = false
         outstandingTasks = []
         completedInteractions = []
         completionBlock = nil
+    }
+
+    /// This allows for an entirely manual recording process, to use this you should first call `beginRecording`, then `deferCompletion`
+    /// and when all your requests are completed call `endRecording` or `invalidateAndCancel`.  This allows you to have dependent networking requests
+    /// that would otherwise stop after the first recording.
+    open func deferCompletion() {
+        status = .awaitingManualCallback
     }
 
     /// This only needs to be called if you call `beginRecording`. `completion` will be called on the main queue after
@@ -110,7 +136,7 @@ open class Session: URLSession {
             return
         }
 
-        recording = false
+        status = .recording(false)
         completionBlock = completion
 
         if outstandingTasks.count == 0 {
